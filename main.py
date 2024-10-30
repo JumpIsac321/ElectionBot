@@ -7,7 +7,7 @@ import time
 import datetime
 import random
 
-from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
+from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract 
 from mysql.connector.pooling import PooledMySQLConnection
 
 load_dotenv()
@@ -367,18 +367,20 @@ async def check_election():
     if mycursor == None or mydb == None:
         print("database issue")
         return
+    admin = guild.get_role(1299892838363824260)
+    if admin == None:
+        print("No admin")
+        return
     print("Checking election")
     if datetime.datetime.today().weekday() != 0:
         print("Not monday")
         return
     print("It's monday, starting...")
 
-
-
-    admin = guild.get_role(1299892838363824260)
-    if admin == None:
-        print("No admin")
+    winner = get_winner()
+    if winner == None:
         return
+    shift_back(winner)
     mycursor.execute("SELECT previous_winner FROM Previous_winner")
     previous_winner = mycursor.fetchone()
     if previous_winner == None:
@@ -389,6 +391,27 @@ async def check_election():
         await previous_winner.remove_roles(admin)
     await winner.add_roles(admin)
 
+def shift_back(winner):
+    if mycursor == None or mydb == None:
+        print("database issue")
+        return
+    mycursor.execute("SELECT previous_president FROM Previous_president")
+    previous_president = mycursor.fetchone()
+    if previous_president == None:
+        mycursor.execute("UPDATE Second_previous_president SET second_previous_president = NULL")
+    else:
+        (previous_president,) = previous_president
+        mycursor.execute("UPDATE Second_previous_president SET second_previous_president = %s",(int(str(previous_president)),))
+    mycursor.execute("SELECT current_president FROM Current_president ")
+    current_president = mycursor.fetchone()
+    if current_president == None:
+        mycursor.execute("UPDATE Previous_president SET previous_president = NULL")
+    else:
+        (current_president,) = current_president
+        mycursor.execute("UPDATE Previous_president SET previous_president = %s",(int(str(current_president)),))
+    mycursor.execute("UPDATE Current_president SET current_president = %s",(winner,))
+    
+
 def get_winner():
     global guild
     if guild == None:
@@ -397,22 +420,18 @@ def get_winner():
         print("database issue")
         return
 
-
-
     mycursor.execute("SELECT votes FROM Candidates ORDER BY votes DESC LIMIT 1")
     top_votes = mycursor.fetchone()
     if top_votes == None:
         print("No candidates")
-        return
+        return None
     (top_votes,) = top_votes
     print(f"top_votes:{top_votes}")
     mycursor.execute("SELECT user_id FROM Candidates WHERE votes = %s",(str(top_votes),))
     candidate_ids = mycursor.fetchall()
     if len(candidate_ids) > 1:
-        return
+        return None
     return guild.get_member(int(str(candidate_ids[0])))
-
-    
 
 @client.command()
 async def manual_election(ctx:commands.Context):
