@@ -1,4 +1,5 @@
 import discord
+from discord.abc import Messageable
 from discord.ext import commands, tasks
 import mysql.connector
 from dotenv import load_dotenv
@@ -23,9 +24,11 @@ client = commands.Bot(command_prefix="$",intents=intents)
 law_channel_id = 1300131141185175663
 bill_channel_id = 1300147371971313856
 presidents_office_id = 1302836640217305141
+constitution_id = 1306801660206649400
 law_channel: discord.abc.Messageable | None = None
 bill_channel: discord.abc.Messageable | None = None
 presidents_office: discord.abc.Messageable | None = None
+constitution: discord.abc.Messageable | None = None
 mydb: MySQLConnectionAbstract | PooledMySQLConnection | None = None
 mycursor: MySQLCursorAbstract | None = None
 guild: discord.Guild | None = None
@@ -38,6 +41,7 @@ async def on_ready():
     global law_channel
     global bill_channel
     global presidents_office
+    global constitution
     mydb = mysql.connector.connect(
         host = "localhost",
         user = "root",
@@ -65,6 +69,11 @@ async def on_ready():
         presidents_office = None
     else:
         presidents_office = presidents_office_tmp
+    constitution_tmp = client.get_channel(constitution_id)
+    if not constitution_tmp or not isinstance(constitution_tmp,discord.abc.Messageable):
+        constitution = None
+    else:
+        constitution = constitution_tmp
     print(law_channel)
     print(bill_channel)
     print(presidents_office)
@@ -75,6 +84,7 @@ async def on_ready():
         #print(e)
     print("working")
 
+#previous president
 def previous_president_id():
     if not mycursor or not mydb or not guild:
         return None
@@ -83,25 +93,14 @@ def previous_president_id():
     if not previous_president:
         return None
     (previous_president,) = previous_president
-    print(previous_president)
     if not previous_president:
         return None
     return int(str(previous_president))
 
-def current_president_id():
-    if not mycursor or not mydb or not guild:
-        return None
-    mycursor.execute("SELECT current_president FROM Current_president")
-    current_president = mycursor.fetchone()
-    if not current_president:
-        return None
-    (current_president,) = current_president
-    return int(str(current_president))
-
 def previous_president():
     if not mycursor or not mydb or not guild:
         return None
-    mycursor.execute("SELECT previous_president FROM Previous_president")
+    mycursor.execute("SELECT previous_winner FROM Previous_winner")
     previous_president = mycursor.fetchone()
     if not previous_president:
         return None
@@ -111,7 +110,15 @@ def previous_president():
     previous_president = guild.get_member(int(str(previous_president)))
     return previous_president
 
-def current_president():
+def set_previous_president(id: int):
+    if not mycursor or not mydb:
+        return None
+    mycursor.execute("UPDATE Previous_winner SET previous_winner = %s",(id,))
+    mydb.commit()
+
+#current president
+
+def get_current_president():
     if not mycursor or not mydb or not guild:
         return None
     mycursor.execute("SELECT current_president FROM Current_president")
@@ -124,6 +131,100 @@ def current_president():
     current_president = guild.get_member(int(str(current_president)))
     return current_president
 
+def current_president_id():
+    if not mycursor or not mydb or not guild:
+        return None
+    mycursor.execute("SELECT current_president FROM Current_president")
+    current_president = mycursor.fetchone()
+    if not current_president:
+        return None
+    (current_president,) = current_president
+    return int(str(current_president))
+
+def set_current_president(id: int):
+    if not mycursor or not mydb:
+        return None
+    mycursor.execute("UPDATE Current_president SET current_president = %s",(id,))
+    mydb.commit()
+
+#bill_voters
+def add_to_bill_voters(name:str,bill_id:int):
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("INSERT INTO Bill_voters (name,bill_id) VALUES (%s,%s)",(name,bill_id))
+    mydb.commit()
+
+def voted_for_bill(name:str,bill_id:int):
+    if not mycursor or not mydb:
+        return None
+    mycursor.execute("SElECT id FROM Bill_voters WHERE name = %s AND bill_id = %s",(name,bill_id))
+    if len(mycursor.fetchall()) != 0:
+        return True
+    return False
+
+#bills
+async def add_bill(bill:str,channel:Messageable,result_time:int,is_amendment:bool):
+    if mycursor == None or mydb == None:
+        return
+    if is_amendment:
+        mycursor.execute("INSERT INTO Bills (bill,upvotes,downvotes,result_time,is_amendment) VALUES (%s,0,0,%s,1)",(bill,result_time))
+    else:
+        mycursor.execute("INSERT INTO Bills (bill,upvotes,downvotes,result_time,is_amendment) VALUES (%s,0,0,%s,0)",(bill,result_time))
+    mydb.commit()
+    id = inserted_id()
+    if is_amendment:
+        bill_message = await channel.send(f"Amendment #{id}: {bill} :arrow_up::0 :arrow_down::0 @everyone")
+    else:
+        bill_message = await channel.send(f"Bill #{id}: {bill} :arrow_up::0 :arrow_down::0 @everyone")
+    mycursor.execute("UPDATE Bills SET message_id = %s WHERE id = %s",(bill_message.id,int(str(id))))
+    mydb.commit()
+
+def remove_bill(bill_id:int):
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("DELETE FROM Bills WHERE id = %s",(bill_id,))
+    mydb.commit()
+
+def upvote_bill(bill_id:int):
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("UPDATE Bills SET upvotes = upvotes + 1 WHERE id = %s",(bill_id,))
+    mydb.commit()
+
+def downvote_bill(bill_id:int):
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("UPDATE Bills SET downvotes = downvotes + 1 WHERE id = %s",(bill_id,))
+    mydb.commit()
+
+def bill_display_information(bill_id:int):
+    if not mycursor or not mydb:
+        return None
+    mycursor.execute("SELECT bill,upvotes,downvotes,message_id FROM Bills WHERE id = %s",(bill_id,))
+    raw_bill_info = mycursor.fetchone()
+    return raw_bill_info
+
+def bill_id_exists(bill_id:int):
+    if not mycursor or not mydb:
+        return None
+    mycursor.execute("SELECT id FROM Bills WHERE id = %s",(bill_id,))
+    if len(mycursor.fetchall()) == 0:
+        return False
+    return True
+
+#candidates
+def add_candidate(name:str,id:int):
+    if mycursor == None or mydb == None:
+        return
+    mycursor.execute("INSERT INTO Candidates (name,user_id) VALUES (%s,%s)",(name,id))
+    mydb.commit()
+
+def remove_candidate(name:str):
+    if mycursor == None or mydb == None:
+        return
+    mycursor.execute("DELETE FROM Candidates WHERE name = %s",(name,))
+    mydb.commit()
+
 def is_running(name:str):
     if not mycursor or not mydb or not guild:
         return None
@@ -132,6 +233,43 @@ def is_running(name:str):
         return True
     return False
 
+def vote_president(name:str):
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("UPDATE Candidates SET votes = votes + 1 WHERE name = %s",(name,))
+    mydb.commit()
+
+def unvote_president(candidate_id:int):
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("UPDATE Candidates SET votes = votes - 1 WHERE user_id = %s",(candidate_id,))
+    mydb.commit()
+
+#president_bills
+async def add_president_bill(bill:str,original_message_id:int,original_id:int,channel):
+    if not mycursor or not mydb or not guild:
+        return None
+    mycursor.execute("INSERT INTO Bills (bill,bill_channel_message_id,original_id) VALUES (%s,0,0,%s)",(bill,original_message_id,original_id))
+    mydb.commit()
+    id = inserted_id()
+    bill_message = await channel.send(f"Bill #{id}: {bill} :arrow_up::0 :arrow_down::0 @everyone")
+    mycursor.execute("UPDATE Bills SET message_id = %s WHERE id = %s",(bill_message.id,int(str(id))))
+    mydb.commit()
+
+async def remove_president_bill(bill_id:int):
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("DELETE FROM President_bills WHERE id = %s",(bill_id,))
+    mydb.commit()
+
+def president_display_information(bill_id:int):
+    if not mycursor or not mydb:
+        return None
+    mycursor.execute("SELECT bill,message_id FROM President_bills WHERE id = %s",(bill_id,))
+    raw_bill_info = mycursor.fetchone()
+    return raw_bill_info
+
+#voters
 def has_voted(name:str):
     if not mycursor or not mydb:
         return None
@@ -139,6 +277,67 @@ def has_voted(name:str):
     if len(mycursor.fetchall()) != 0:
         return True
     return False
+
+
+def add_to_voters(name:str,vote_id:int):
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("INSERT INTO Voters (name,candidate_id) VALUES (%s,%s)",(name,vote_id))
+    mydb.commit()
+
+def remove_from_voters(name:str):
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("DELETE FROM Voters WHERE name = %s",(name,))
+    mydb.commit()
+
+#impeachment
+def get_impeachment():
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("SELECT current_impeachment,upvotes,downvotes,result_time,message_id,president_id FROM Impeachment")
+    impeachment_info = mycursor.fetchone()
+    if not impeachment_info:
+        return None
+    (current_impeachment,upvotes,downvotes,result_time,message_id,president_id) = impeachment_info
+    if int(str(current_impeachment)) == 0:
+        return None
+    return (upvotes,downvotes,result_time,message_id,president_id)
+
+def stop_impeachment():
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("UPDATE Impeachment SET upvotes = 0, downvotes = 0, result_time = NULL, message_id = NULL, current_impeachment = 0, president_id = NULL")
+    mydb.commit()
+
+def upvote_impeachment():
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("UPDATE Impeachment SET upvotes = upvotes + 1")
+
+def downvote_impeachment():
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("UPDATE Impeachment SET downvotes = downvotes + 1")
+
+#next_election_time
+def get_election_time():
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("SELECT time FROM Next_election_time")
+    time = mycursor.fetchone()
+    if not time:
+        return
+    (time,) = time
+    if time:
+        return int(str(time))
+    return None
+
+def set_election_time(time:int):
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("UPDATE Next_election_time SET time = %s",(time,))
+    mydb.commit()
 
 def inserted_id():
     if not mycursor or not mydb:
@@ -150,82 +349,41 @@ def inserted_id():
     (id,) = raw_id
     return id
 
-def bill_id_exists(bill_id:int):
-    if not mycursor or not mydb:
-        return None
-    mycursor.execute("SELECT id FROM Bills WHERE id = %s",(bill_id,))
-    if len(mycursor.fetchall()) == 0:
-        return False
-    return True
-
-def voted_for_bill(name:str,bill_id:int):
-    if not mycursor or not mydb:
-        return None
-    mycursor.execute("SElECT id FROM Bill_voters WHERE name = %s AND bill_id = %s",(name,bill_id))
-    if len(mycursor.fetchall()) != 0:
-        return True
+def had_two_terms(id:int):
+    previous_president_id_var = previous_president_id()
+    current_president_id_var = current_president_id()
+    if previous_president_id_var and current_president_id_var and \
+        previous_president_id_var == current_president_id_var and previous_president_id_var == id:
+            return True
     return False
 
-def display_information(bill_id:int):
+def clear_candidates():
     if not mycursor or not mydb:
         return None
-    mycursor.execute("SELECT bill,upvotes,downvotes,message_id FROM Bills WHERE id = %s",(bill_id,))
-    raw_bill_info = mycursor.fetchone()
-    return raw_bill_info
+    mycursor.execute("DELETE FROM Candidates")
+    mydb.commit()
 
-def president_display_information(bill_id:int):
+def clear_voters():
     if not mycursor or not mydb:
         return None
-    mycursor.execute("SELECT bill,message_id FROM President_bills WHERE id = %s",(bill_id,))
-    raw_bill_info = mycursor.fetchone()
-    return raw_bill_info
-    
-    
-@client.command()
-async def hello(ctx):
-    await ctx.send("hi")
-
-@client.command()
-async def get_members(ctx:commands.Context):
-    #testing: 1277053200528052316
-    #main: 1297301010934403124
-    guild = ctx.guild
-    if guild == None:
-        return
-    members = guild.members
-    for member in members:
-        if not member.bot:
-            await ctx.send(member.name)
+    mycursor.execute("DELETE FROM Voters")
+    mydb.commit()
 
 @client.command()
 async def run(ctx:commands.Context):
-    global mycursor
-    global mydb
-    if mycursor == None or mydb == None:
-        return
     if is_running(ctx.author.name):
         await ctx.send("You are already running")
         return
-    previous_president_id_var = previous_president_id()
-    current_president_id_var = current_president_id()
-    if previous_president_id_var and current_president_id_var:
-        if previous_president_id_var == current_president_id_var and previous_president_id_var == ctx.author.id:
-            await ctx.send("You have already had 2 terms")
-            return
-    mycursor.execute("INSERT INTO Candidates (name,user_id) VALUES (%s,%s)",(ctx.author.name,ctx.author.id))
-    mydb.commit()
+    if had_two_terms(ctx.author.id):
+        await ctx.send("You have already had 2 terms")
+    add_candidate(ctx.author.name,ctx.author.id)
 
 @client.command()
 async def unrun(ctx:commands.Context):
-    if mycursor == None or mydb == None:
-        return
     if not is_running(ctx.author.name):
         await ctx.send("You are not running")
         return
-    mycursor.execute("DELETE FROM Candidates WHERE name = %s",(ctx.author.name,))
-    mydb.commit()
-    mycursor.execute("DELETE FROM Voters WHERE candidate = %s",(ctx.author.name,))
-    mydb.commit()
+    remove_candidate(ctx.author.name)
 
 def s(input:int):
     if input == 1:
@@ -248,23 +406,30 @@ async def candidates(ctx:commands.Context):
 
 @client.command()
 async def vote(ctx:commands.Context,vote:discord.User):
-    if mycursor == None or mydb == None:
-        return
-    username = vote.name
     if has_voted(ctx.author.name):
         await ctx.send("You have already voted")
         return
     if is_running(ctx.author.name):
         await ctx.send("You are a candidate")
         return
-    if not is_running(username):
+    if not is_running(vote.name):
         await ctx.send("That user is not running")
         return
-    mycursor.execute("UPDATE Candidates SET votes = votes + 1 WHERE name = %s",(username,))
-    mydb.commit()
-    mycursor.execute("INSERT INTO Voters (name,candidate) VALUES (%s)",(ctx.author.name,username))
-    mydb.commit()
+    vote_president(vote.name)
+    add_to_voters(ctx.author.name,vote.id)
     await ctx.send("Voted!")
+
+@client.command()
+async def unvote(ctx:commands.Context):
+    if not mycursor or not mydb:
+        return
+    mycursor.execute("SELECT candidate_id FROM Voters WHERE name = %s",(ctx.author.name,))
+    candidate_id = mycursor.fetchone()
+    if not candidate_id:
+        return
+    (candidate_id,) = candidate_id
+    unvote_president(int(str(candidate_id)))
+    remove_from_voters(ctx.author.name)
 
 @client.command()
 async def top_candidate(ctx:commands.Context):
@@ -282,28 +447,15 @@ async def top_candidate(ctx:commands.Context):
         candidates_str += f"{candidate}\n"
     await ctx.send(candidates_str)
 
-#@client.tree.command()
-#async def testing(interactions:discord.Interaction):
-    #await interactions.response.send_message("tested")
-
-
 @client.tree.command()
 async def create_bill(interaction:discord.Interaction, law:str):
-    #law_channel = 1300131141185175663 
-    #bill_channel_id = 1300147371971313856
-    #bill_channel = client.get_channel(bill_channel_id)
-    if not isinstance(bill_channel,discord.abc.Messageable):
+    if not bill_channel:
         return
     voting_time = 72
     if mycursor == None or mydb == None:
         return
     result_time = int(time.time()) + voting_time*3600
-    mycursor.execute("INSERT INTO Bills (bill,upvotes,downvotes,result_time) VALUES (%s,0,0,%s)",(law,result_time))
-    mydb.commit()
-    id = inserted_id()
-    bill_message = await bill_channel.send(f"Bill #{id}: {law} :arrow_up::0 :arrow_down::0 @everyone")
-    mycursor.execute("UPDATE Bills SET message_id = %s WHERE id = %s",(bill_message.id,int(str(id))))
-    mydb.commit()
+    await add_bill(law,bill_channel,result_time,False)
     await interaction.response.send_message("Bill created!")
 
 @client.command()
@@ -316,10 +468,8 @@ async def upvote(ctx:commands.Context,bill_id:int):
     if voted_for_bill(ctx.author.name,bill_id):
         await ctx.send("You already voted for this bill")
         return
-    mycursor.execute("UPDATE Bills SET upvotes = upvotes + 1 WHERE id = %s",(bill_id,))
-    mydb.commit()
-    mycursor.execute("INSERT INTO Bill_voters (name,bill_id) VALUES (%s,%s)",(ctx.author.name,bill_id))
-    mydb.commit()
+    upvote_bill(bill_id)
+    add_to_bill_voters(ctx.author.name,bill_id)
     await update_bill(bill_id)
 
 @client.command()
@@ -332,10 +482,8 @@ async def downvote(ctx:commands.Context,bill_id:int):
     if voted_for_bill(ctx.author.name,bill_id):
         await ctx.send("You already voted for this bill")
         return
-    mycursor.execute("UPDATE Bills SET downvotes = downvotes + 1 WHERE id = %s",(bill_id,))
-    mydb.commit()
-    mycursor.execute("INSERT INTO Bill_voters (name,bill_id) VALUES (%s,%s)",(ctx.author.name,bill_id))
-    mydb.commit()
+    downvote_bill(bill_id)
+    add_to_bill_voters(ctx.author.name,bill_id)
     await update_bill(bill_id)
 
 @client.command()
@@ -351,15 +499,11 @@ async def update_bills(ctx:commands.Context):
     await ctx.send("Updated!")
 
 async def update_bill(bill_id):
-    bill_channel_id = 1300147371971313856
-    bill_channel = client.get_channel(bill_channel_id)
-    if bill_channel == None:
-        return
-    if not isinstance(bill_channel,discord.abc.Messageable):
+    if not bill_channel:
         return
     if mycursor == None or mydb == None:
         return
-    display_information_var = display_information(bill_id)
+    display_information_var = bill_display_information(bill_id)
     if display_information_var == None:
         return
     (bill,upvotes,downvotes,message_id) = display_information_var
@@ -368,7 +512,6 @@ async def update_bill(bill_id):
     await bill_message.edit(content=new_message)
 
 async def update_president_bill(bill_id):
-    global presidents_office
     if not presidents_office:
         return
     if not mycursor or not mydb:
@@ -380,7 +523,6 @@ async def update_president_bill(bill_id):
     new_message = f"New Bill! #{bill_id}: {bill} <@&1299892838363824260>"
     bill_message = await presidents_office.fetch_message(int(str(message_id)))
     await bill_message.edit(content=new_message)
-    
 
 @client.command()
 async def bills(ctx:commands.Context):
@@ -390,6 +532,8 @@ async def bills(ctx:commands.Context):
     bills_str = ""
     for (id,bill) in mycursor.fetchall():
         bills_str += f"{id}: {bill}\n"
+    if bills_str == "":
+        await ctx.send("No bills")
     await ctx.send(bills_str)
 
 @client.command()
@@ -403,46 +547,60 @@ async def sync(ctx):
 
 @tasks.loop(minutes=5)
 async def check_bills():
-    global law_channel
-    global bill_channel
-    global presidents_office
-    if not law_channel or not bill_channel or not presidents_office or \
-    (not isinstance(law_channel,discord.abc.Messageable)) or (not isinstance(bill_channel,discord.abc.Messageable)) or (not isinstance(presidents_office,discord.abc.Messageable)) or not guild:
-        print("channels doesn't exist")
-        print(f"law channel: {law_channel}")
-        print(f"bill channel: {bill_channel}")
-        print(f"presidents_office: {presidents_office}")
+    if not law_channel or not bill_channel or not presidents_office or not guild or not constitution:
         return
-    print("checking bills")
-    #get bills
     if mycursor == None or mydb == None:
         return
-    mycursor.execute("SELECT id,bill,upvotes,downvotes,result_time,message_id FROM Bills")
-    for (id,bill,upvotes,downvotes,result_time,message_id) in mycursor.fetchall():
+    mycursor.execute("SELECT id,bill,upvotes,downvotes,result_time,message_id,is_amendment FROM Bills")
+    for (id,bill,upvotes,downvotes,result_time,message_id,is_amendment) in mycursor.fetchall():
         if time.time() >= int(str(result_time)):
-            await bill_result(id,bill,upvotes,downvotes,message_id,presidents_office,bill_channel)
-    #mycursor.execute("SELECT current_impeachment,upvotes,downvotes,result_time,message_id,president_id FROM Impeachment")
-    #impeachment_info = mycursor.fetchone()
-    #if not impeachment_info:
-        #return
-    #(current_impeachment,upvotes,downvotes,result_time,message_id,president_id) = impeachment_info
-    #if int(str(current_impeachment)) == 0:
-        #return
-    #if int(str(upvotes)) < 2 * int(str(downvotes)):
-        #president_member = guild.get_member(int(str(president_id)))
-        #if not president_member:
-            #return
-        #impeachment_message = await bill_channel.fetch_message(int(str(message_id)))
-        #await impeachment_message.delete()
-        #await bill_channel.send(f"{president_member.mention} was not impeached")
-    #else:
-        
-    
-    
+            await bill_result(id,bill,upvotes,downvotes,message_id,presidents_office,bill_channel,is_amendment,constitution)
 
-async def bill_result(bill_channel_id,bill,upvotes,downvotes,bill_channel_message_id,presidents_office,bill_channel:discord.abc.Messageable):
+    impeachment_info = get_impeachment()
+    if not impeachment_info:
+        return
+    (upvotes,downvotes,result_time,message_id,president_id) = impeachment_info
+    if time.time() < int(str(result_time)):
+        return
+    president_member = guild.get_member(int(str(president_id)))
+    if not president_member:
+        return
+    if int(str(upvotes)) < 2 * int(str(downvotes)):
+        await bill_channel.send(f"{president_member.mention} was not impeached")
+        stop_impeachment()
+    else:
+        admin = guild.get_role(1299892838363824260)
+        if admin == None:
+            print("No admin")
+            return
+        await president_member.remove_roles(admin)
+        next_election_in = 24
+        election_time = int(time.time()) + next_election_in * 3600
+        set_election_time(election_time)
+        current_president = get_current_president()
+        if not current_president:
+            return
+        await bill_channel.send(f"{current_president.name} has been impeached")
+    impeachment_message = await bill_channel.fetch_message(int(str(message_id)))
+    await impeachment_message.delete()
+        
+async def bill_result(bill_channel_id,bill,upvotes,downvotes,bill_channel_message_id,presidents_office,bill_channel:discord.abc.Messageable,is_amendment,constitution_channel):
+    print(f"bill_channel_id:{bill_channel_id}")
+    print(f"bill:{bill}")
+    print(f"upvotes:{upvotes}")
+    print(f"downvotes:{downvotes}")
+    print(f"bill_channel_message_id:{bill_channel_message_id}")
+    print(f"presidents_office:{presidents_office}")
+    print(f"bill_channel:{bill_channel}")
     if mycursor == None or mydb == None:
         return
+    if is_amendment == 1 and int(str(upvotes)) >= 2*int(str(downvotes)):
+        constitution_channel.send(str(bill))
+        mycursor.execute("DELETE FROM Bill_voters WHERE bill_id = %s",(int(str(bill_channel_id)),))
+        mydb.commit()
+        remove_bill(bill_channel_id)
+        message = await bill_channel.fetch_message(bill_channel_message_id)
+        await message.delete()
     if int(str(upvotes)) >= int(str(downvotes)):
         #give president bill
         mycursor.execute("INSERT INTO President_bills (bill,bill_channel_message_id) VALUES (%s,%s)",(bill,bill_channel_message_id))
@@ -462,8 +620,7 @@ async def bill_result(bill_channel_id,bill,upvotes,downvotes,bill_channel_messag
         await bill_channel_message.delete()
     mycursor.execute("DELETE FROM Bill_voters WHERE bill_id = %s",(int(str(bill_channel_id)),))
     mydb.commit()
-    mycursor.execute("DELETE FROM Bills WHERE id = %s",(int(str(bill_channel_id)),))
-    mydb.commit()
+    remove_bill(bill_channel_id)
 
 @client.command()
 async def approve(ctx:commands.Context,bill_id:int):
@@ -474,6 +631,10 @@ async def approve(ctx:commands.Context,bill_id:int):
     if law_channel == None or bill_channel == None or (not isinstance(law_channel,discord.abc.Messageable)) or (not isinstance(bill_channel,discord.abc.Messageable)):
         return
     if mycursor == None or mydb == None:
+        return
+    president = current_president_id()
+    if president != ctx.author.id:
+        await ctx.send("You are not the president")
         return
     mycursor.execute("SELECT id,bill FROM President_bills WHERE id = %s",(bill_id,))
     raw_bill = mycursor.fetchone()
@@ -494,42 +655,52 @@ async def approve(ctx:commands.Context,bill_id:int):
 
 @client.command()
 async def veto(ctx:commands.Context,bill_id:int):
-    law_channel_id = 1300131141185175663
-    law_channel = client.get_channel(law_channel_id)
-    bill_channel_id = 1300147371971313856
-    bill_channel = client.get_channel(bill_channel_id)
-    if law_channel == None or bill_channel == None or (not isinstance(law_channel,discord.abc.Messageable)) or (not isinstance(bill_channel,discord.abc.Messageable)):
+    if law_channel == None or bill_channel == None:
         return
     if mycursor == None or mydb == None:
+        return
+    president = current_president_id()
+    if president != ctx.author.id:
+        await ctx.send("You are not the president")
         return
     mycursor.execute("SELECT id FROM President_bills WHERE id = %s",(bill_id,))
     raw_id = mycursor.fetchone()
     if raw_id == None:
         await ctx.send("That bill doesn't exist")
         return
-    mycursor.execute("SELECT bill_channel_message_id FROM President_bills WHERE id = %s",(bill_id,))
-    raw_bill_id = mycursor.fetchone()
-    if raw_bill_id == None:
+    mycursor.execute("SELECT bill_channel_message_id,original_id FROM President_bills WHERE id = %s",(bill_id,))
+    raw_info = mycursor.fetchone()
+    if raw_info == None:
         return
-    (bill_channel_message_id,) = raw_bill_id
+    (bill_channel_message_id,original_id) = raw_info
     bill_channel_message = await bill_channel.fetch_message(int(str(bill_channel_message_id)))
     await bill_channel_message.delete()
-    mycursor.execute("DELETE FROM President_bills WHERE id = %s",(bill_id,))
-    mydb.commit()
-    await bill_channel.send(f"Bill #{bill_channel_id} was vetoed")
+    await remove_president_bill(bill_id)
+    await bill_channel.send(f"Bill #{int(str(original_id))} was vetoed")
+
+@client.tree.command()
+async def change(interaction:discord.Interaction,bill_id:int,new_bill:str):
+    if not bill_channel:
+        return
+    president = current_president_id()
+    if interaction.user.id != president:
+        await interaction.response.send_message("You are not the president")
+        return
+    await remove_president_bill(bill_id)
+    waiting_time = 24
+    result_time = int(time.time())+waiting_time*3600
+    await add_bill(new_bill,bill_channel,result_time,False)
 
 @tasks.loop(time=datetime.time(hour=23,tzinfo=datetime.timezone.utc))
 async def check_election():
     print("Checking election")
-    if datetime.datetime.today().weekday() != 0:
-        print("Not monday")
+    next_election = get_election_time()
+    if datetime.datetime.today().weekday() != 0 or (next_election and time.time() > next_election):
         return
-    print("It's monday, starting...")
     await election()
 
 async def election():
-    global guild
-    if guild == None:
+    if not guild:
         return
     if mycursor == None or mydb == None:
         print("database issue")
@@ -538,55 +709,37 @@ async def election():
     if admin == None:
         print("No admin")
         return
-
     winner = get_winner()
     if winner == None:
         return
     shift_back(winner)
-    mycursor.execute("SELECT previous_winner FROM Previous_winner")
-    previous_winner = mycursor.fetchone()
-    if previous_winner == None:
-        return
-    (previous_winner,) = previous_winner
+    previous_winner = previous_president()
     if previous_winner:
-        print(f"previous_winner:{previous_winner}")
-        previous_winner = guild.get_member(int(str(previous_winner)))
-        if previous_winner != None:
-            await previous_winner.remove_roles(admin)
+        await previous_winner.remove_roles(admin)
     await winner.add_roles(admin)
-    mycursor.execute("DELETE FROM Candidates")
-    mydb.commit()
-    mycursor.execute("DELETE FROM Voters")
-    mydb.commit()
+    clear_candidates()
+    clear_voters()
+    stop_impeachment()
     print("Election happened")
 
 def shift_back(winner:discord.Member):
     if mycursor == None or mydb == None:
         print("database issue")
         return
-    mycursor.execute("SELECT current_president FROM Current_president")
-    current_president = mycursor.fetchone()
-    print(current_president)
-    print(str(current_president))
-    if str(current_president) == "(None,)" or not current_president:
+    current_president = current_president_id()
+    if not current_president:
         mycursor.execute("UPDATE Previous_winner SET previous_winner = NULL")
         mydb.commit()
     else:
-        (current_president,) = current_president
-        mycursor.execute("UPDATE Previous_winner SET previous_winner = %s",(int(str(current_president)),))
-        mydb.commit()
-    mycursor.execute("UPDATE Current_president SET current_president = %s",(winner.id,))
-    mydb.commit()
-    print("shifted!")
+        set_previous_president(current_president)
+    set_current_president(winner.id)
 
 def get_winner():
-    global guild
     if guild == None:
         return
     if mycursor == None or mydb == None:
         print("database issue")
         return
-
     mycursor.execute("SELECT votes FROM Candidates ORDER BY votes DESC LIMIT 1")
     top_votes = mycursor.fetchone()
     if top_votes == None:
@@ -610,22 +763,26 @@ async def manual_election(ctx:commands.Context):
 
 @client.command()
 async def impeach(_:commands.Context):
-    global bill_channel
-    global guild
-    if not mycursor or not mydb or not bill_channel or not isinstance(bill_channel,discord.abc.Messageable) or not guild:
+    if not mycursor or not mydb or not bill_channel or not guild:
         return
-    mycursor.execute("SELECT current_president FROM Current_president")
-    president = mycursor.fetchone()
-    if president == None:
-        return
-    (president,) = president
-    president = guild.get_member(int(str(president)))
+    president = get_current_president()
     if not president:
         return
     impeach_message = await bill_channel.send(f"Impeach {president.mention}? :arrow_up::0 :arrow_down::0 @everyone")
     current_time = int(time.time())
-    result_hours = 72
+    result_hours = 48
     result_time = current_time + result_hours * 3600
     mycursor.execute("UPDATE Impeachment SET current_impeachment = 1, upvotes = 0, downvotes = 0, result_time = %s, message_id = %s",(result_time,impeach_message.id))
+
+@client.tree.command()
+async def create_amendment(interaction:discord.Interaction,amendment:str):
+    if not bill_channel:
+        return
+    voting_time = 72
+    if mycursor == None or mydb == None:
+        return
+    result_time = int(time.time()) + voting_time*3600
+    await add_bill(amendment,bill_channel,result_time,True)
+    await interaction.response.send_message("Bill created!")
 
 client.run(TOKEN)
